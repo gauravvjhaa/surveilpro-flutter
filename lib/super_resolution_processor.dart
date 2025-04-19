@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
@@ -11,19 +12,31 @@ class SuperResolutionProcessor {
   // Track if TFLite has been successfully initialized
   static bool _tfLiteAvailable = true;
 
-  // Process an image through the SR model
+  // Define named error types for better UI handling
+  static const String ERROR_OUT_OF_MEMORY = 'IMAGE_TOO_LARGE';
+  static const String ERROR_MODEL_MISSING = 'MODEL_MISSING';
+  static const String ERROR_TFLITE_FAILED = 'TFLITE_ERROR';
+
+  // Process an image through the SR model with progress reporting
   static Future<File?> enhanceImage({
     required File inputFile,
     required ModelType modelType,
-    required int scale
+    required int scale,
+    Function(double progress, String stage)? onProgress,
   }) async {
     print("🚀 [SR] Starting image enhancement: scale=${scale}x");
+
+    // Start progress reporting
+    onProgress?.call(0.0, "Initializing...");
+
     try {
       // 1. Load the image
+      onProgress?.call(0.05, "Loading image...");
       print("📂 [SR] Loading image from file: ${inputFile.path}");
       final inputBytes = await inputFile.readAsBytes();
       print("📊 [SR] Image bytes loaded: ${inputBytes.length} bytes");
 
+      onProgress?.call(0.08, "Decoding image...");
       final inputImage = img.decodeImage(inputBytes);
       if (inputImage == null) {
         print("❌ [SR] Failed to decode input image");
@@ -31,7 +44,14 @@ class SuperResolutionProcessor {
       }
       print("🖼️ [SR] Image decoded successfully: ${inputImage.width}x${inputImage.height}");
 
+      // Check if image is too large to process
+      if (!await _hasEnoughMemory(inputImage, scale)) {
+        print("⚠️ [SR] Image is too large for available memory");
+        throw Exception(ERROR_OUT_OF_MEMORY);
+      }
+
       // 2. Get the model file
+      onProgress?.call(0.1, "Loading AI model...");
       final appDir = await getApplicationDocumentsDirectory();
       final modelFilePath = '${appDir.path}/models/${modelType.fileName}';
       final modelFile = File(modelFilePath);
@@ -39,32 +59,41 @@ class SuperResolutionProcessor {
 
       if (!await modelFile.exists()) {
         print("❌ [SR] Model file not found at: $modelFilePath");
-        throw Exception('Model file not found');
+        throw Exception(ERROR_MODEL_MISSING);
       }
       print("✅ [SR] Model file found: ${await modelFile.length()} bytes");
 
       // 3. Check if we already know TFLite is unavailable
       if (!_tfLiteAvailable) {
         print("⚠️ [SR] TFLite previously marked as unavailable, using fallback");
-        return _createEnhancedImage(inputFile, inputImage, scale);
+        return _createEnhancedImage(
+          inputFile,
+          inputImage,
+          scale,
+          onProgress: (fallbackProgress) {
+            // Map fallback progress (0-1) to overall progress range (0.1-1.0)
+            onProgress?.call(0.1 + (fallbackProgress * 0.9), "Enhancing image...");
+          },
+        );
       }
 
       try {
         // 4. Try to initialize the interpreter
         Interpreter? interpreter;
+        onProgress?.call(0.15, "Initializing AI model...");
         print("🔄 [SR] Attempting to initialize TFLite interpreter");
 
         try {
-          print("🔄 [SR] Attempt 1: Loading from file with 2 threads");
+          print("🔄 [SR] Attempt 1: Loading from file path");
           final options = InterpreterOptions()..threads = 2;
-          // Fix: Don't cast String to File
-          interpreter = await Interpreter.fromFile(modelFile.path as File, options: options);
+          interpreter = await Interpreter.fromFile(modelFile, options: options);
           print("✅ [SR] Interpreter loaded successfully from file");
         } catch (e) {
           print("⚠️ [SR] First TFLite load attempt failed: $e");
 
           // Try another approach - using buffer instead of file
           try {
+            onProgress?.call(0.15, "Preparing AI model (retry)...");
             print("🔄 [SR] Attempt 2: Loading from buffer");
             final modelBuffer = await modelFile.readAsBytes();
             print("📊 [SR] Model buffer size: ${modelBuffer.length} bytes");
@@ -81,7 +110,7 @@ class SuperResolutionProcessor {
           throw Exception('Failed to initialize TFLite interpreter');
         }
 
-        // Print interpreter details for debugging - use correct methods
+        // Print interpreter details for debugging
         print("📊 [SR] Input tensor count: ${interpreter.getInputTensor(0) != null ? 1 : 0}");
         print("📊 [SR] Output tensor count: ${interpreter.getOutputTensor(0) != null ? 1 : 0}");
 
@@ -94,15 +123,23 @@ class SuperResolutionProcessor {
         print("🔤 [SR] Output type: ${outputTensor.type}");
 
         // 5. Process image with real TFLite model
+        onProgress?.call(0.2, "Starting enhancement...");
         print("🔄 [SR] Starting tiling process");
         final enhancedImage = await _processWithTiling(
           interpreter: interpreter,
           image: inputImage,
           scale: scale,
+          onProgress: (tileProgress) {
+            // Map tile progress (0-1) to overall progress range (0.2-0.9)
+            final overallProgress = 0.2 + (tileProgress * 0.7);
+            final completedPercent = (tileProgress * 100).toInt();
+            onProgress?.call(overallProgress, "Enhancing image: $completedPercent%");
+          },
         );
         print("✅ [SR] Tiling process complete: ${enhancedImage.width}x${enhancedImage.height}");
 
         // 6. Save output to file
+        onProgress?.call(0.9, "Saving enhanced image...");
         final tempDir = await getTemporaryDirectory();
         final outputFileName = 'sr_${DateTime.now().millisecondsSinceEpoch}.jpg';
         final outputFile = File('${tempDir.path}/$outputFileName');
@@ -115,17 +152,34 @@ class SuperResolutionProcessor {
         print("✅ [SR] File saved successfully");
 
         // 7. Clean up
+        onProgress?.call(1.0, "Enhancement complete!");
         print("🧹 [SR] Closing interpreter");
         interpreter.close();
 
         return outputFile;
 
       } catch (e) {
+        // Handle TFLite errors properly
+        if (e.toString().contains('memory') || e.toString().contains('OutOfMemory')) {
+          print("❌ [SR] Out of memory error: $e");
+          throw Exception(ERROR_OUT_OF_MEMORY);
+        }
+
         // If TFLite failed, mark it as unavailable and use fallback
         print("❌ [SR] TFLite failed: $e");
         print("⚠️ [SR] Marking TFLite as unavailable and using fallback");
         _tfLiteAvailable = false;
-        return _createEnhancedImage(inputFile, inputImage, scale);
+
+        onProgress?.call(0.3, "Using fallback enhancement...");
+        return _createEnhancedImage(
+          inputFile,
+          inputImage,
+          scale,
+          onProgress: (fallbackProgress) {
+            // Map fallback progress (0-1) to overall progress range (0.3-1.0)
+            onProgress?.call(0.3 + (fallbackProgress * 0.7), "Enhancing image with fallback method...");
+          },
+        );
       }
 
     } catch (e, stackTrace) {
@@ -136,17 +190,53 @@ class SuperResolutionProcessor {
         stackTrace: stackTrace,
         name: 'sr_processor',
       );
-      return null;
+
+      // Pass specific error types through
+      if (e.toString().contains(ERROR_OUT_OF_MEMORY)) {
+        throw Exception(ERROR_OUT_OF_MEMORY);
+      } else if (e.toString().contains(ERROR_MODEL_MISSING)) {
+        throw Exception(ERROR_MODEL_MISSING);
+      } else if (e.toString().contains(ERROR_TFLITE_FAILED)) {
+        throw Exception(ERROR_TFLITE_FAILED);
+      }
+
+      // For other errors, just pass them through
+      throw e;
     }
   }
 
+  // Check if there's enough memory to process the image
+  static Future<bool> _hasEnoughMemory(img.Image image, int scale) async {
+    // Check if the image is too large based on pixel count
+    final inputPixels = image.width * image.height;
+    final outputPixels = inputPixels * scale * scale;
+
+    // Basic heuristic: If output is >25 megapixels, memory might be an issue
+    if (outputPixels > 25000000) {
+      print("⚠️ [SR] Image potentially too large: output will be ${outputPixels / 1000000}MP");
+      return false;
+    }
+
+    // Could add platform-specific memory checks here
+    return true;
+  }
+
   // Create an enhanced version of the image without using TFLite
-  static Future<File> _createEnhancedImage(File inputFile, img.Image originalImage, int scale) async {
+  static Future<File> _createEnhancedImage(
+      File inputFile,
+      img.Image originalImage,
+      int scale,
+      {Function(double progress)? onProgress}
+      ) async {
     print("🔄 [SR-Fallback] Starting enhanced image creation");
     developer.log('Creating enhanced image using fallback method', name: 'sr_processor');
 
+    onProgress?.call(0.1);
+
     // First resize the image to the target size
     print("🖼️ [SR-Fallback] Resizing image to ${originalImage.width * scale}x${originalImage.height * scale}");
+    onProgress?.call(0.3);
+
     final enhancedImage = img.copyResize(
       originalImage,
       width: originalImage.width * scale,
@@ -154,11 +244,13 @@ class SuperResolutionProcessor {
       interpolation: img.Interpolation.cubic,
     );
     print("✅ [SR-Fallback] Image resized successfully");
+    onProgress?.call(0.5);
 
     // Apply image processing to simulate enhancement
     print("🔄 [SR-Fallback] Applying image quality enhancements");
     final processedImage = _enhanceImageQuality(enhancedImage);
     print("✅ [SR-Fallback] Enhancements applied");
+    onProgress?.call(0.8);
 
     // Save to a temp file
     print("📂 [SR-Fallback] Preparing to save enhanced image");
@@ -175,6 +267,7 @@ class SuperResolutionProcessor {
     print("🔄 [SR-Fallback] Writing to file");
     await outputFile.writeAsBytes(outputBytes);
     print("✅ [SR-Fallback] File saved successfully");
+    onProgress?.call(1.0);
 
     return outputFile;
   }
@@ -190,7 +283,7 @@ class SuperResolutionProcessor {
     // 2. Apply a sharpening filter
     final kernel = [
       -1, -1, -1,
-      -1, 9, -1,
+      -1,  9, -1,
       -1, -1, -1
     ];
     image = img.convolution(image, filter: kernel);
@@ -204,11 +297,12 @@ class SuperResolutionProcessor {
     return image;
   }
 
-  // Process image using tiling technique to handle large images
+  // Process image using tiling technique with accurate progress reporting
   static Future<img.Image> _processWithTiling({
     required Interpreter interpreter,
     required img.Image image,
     required int scale,
+    Function(double progress)? onProgress,
     int tileSize = 256, // Process in 256x256 tiles
   }) async {
     print("🧩 [SR-Tiling] Starting tiling process");
@@ -226,28 +320,35 @@ class SuperResolutionProcessor {
       // Calculate number of tiles
       final numTilesX = (image.width + tileSize - 1) ~/ tileSize;
       final numTilesY = (image.height + tileSize - 1) ~/ tileSize;
-      print("🧮 [SR-Tiling] Tile grid: ${numTilesX}x${numTilesY} tiles");
+      final totalTiles = numTilesX * numTilesY;
+      print("🧮 [SR-Tiling] Tile grid: ${numTilesX}x${numTilesY} tiles (total: $totalTiles)");
 
       // Overlap for seamless blending
       const overlap = 16;
       print("📏 [SR-Tiling] Using overlap of $overlap pixels");
 
+      // Track processed tiles for progress
+      int processedTiles = 0;
+
       // Process each tile
       for (int ty = 0; ty < numTilesY; ty++) {
         for (int tx = 0; tx < numTilesX; tx++) {
-          print("🧩 [SR-Tiling] Processing tile at grid position ($tx, $ty)");
+          // Update progress
+          processedTiles++;
+          final progress = processedTiles / totalTiles;
+          onProgress?.call(progress);
+
+          print("🧩 [SR-Tiling] Processing tile $processedTiles/$totalTiles at position ($tx, $ty) - ${(progress * 100).toInt()}%");
 
           // Calculate tile coordinates with overlap
           int x0 = tx * tileSize - overlap;
           int y0 = ty * tileSize - overlap;
-          int x1 = (tx + 1) * tileSize + overlap;
-          int y1 = (ty + 1) * tileSize + overlap;
+          int x1 = min((tx + 1) * tileSize + overlap, image.width);
+          int y1 = min((ty + 1) * tileSize + overlap, image.height);
 
           // Clamp to image boundaries
-          x0 = x0.clamp(0, image.width);
-          y0 = y0.clamp(0, image.height);
-          x1 = x1.clamp(0, image.width);
-          y1 = y1.clamp(0, image.height);
+          x0 = max(0, x0);
+          y0 = max(0, y0);
 
           // Extract tile
           final tileWidth = x1 - x0;
@@ -274,48 +375,37 @@ class SuperResolutionProcessor {
           final outY0 = y0 * scale;
           print("📍 [SR-Tiling] Output start position: ($outX0, $outY0)");
 
-          // Paste processed tile into output image (only the non-overlapping part)
-          int pasteX = outX0;
-          int pasteY = outY0;
+          // Determine which parts of this tile are not overlapped by subsequent tiles
+          int effectiveWidth = tileWidth;
+          int effectiveHeight = tileHeight;
 
-          int pasteWidth = processedTile.width;
-          int pasteHeight = processedTile.height;
-
-          // Adjust paste dimensions to avoid overlaps
-          if (tx > 0) {
-            pasteX += overlap * scale;
-            pasteWidth -= overlap * scale;
+          if (tx < numTilesX - 1) {
+            effectiveWidth = min(tileWidth, tileSize);
           }
-          if (ty > 0) {
-            pasteY += overlap * scale;
-            pasteHeight -= overlap * scale;
+
+          if (ty < numTilesY - 1) {
+            effectiveHeight = min(tileHeight, tileSize);
           }
-          if (tx < numTilesX - 1) pasteWidth -= overlap * scale;
-          if (ty < numTilesY - 1) pasteHeight -= overlap * scale;
 
-          print("📐 [SR-Tiling] Paste region: ($pasteX, $pasteY) ${pasteWidth}x${pasteHeight}");
+          // Copy pixels from processed tile to output image
+          print("🔄 [SR-Tiling] Copying processed tile to output image");
+          for (int y = 0; y < effectiveHeight * scale; y++) {
+            for (int x = 0; x < effectiveWidth * scale; x++) {
+              // Make sure we're within bounds of both images
+              if (x < processedTile.width &&
+                  y < processedTile.height &&
+                  outX0 + x < outputImage.width &&
+                  outY0 + y < outputImage.height) {
 
-          // Copy pixels
-          print("🔄 [SR-Tiling] Copying pixels to output image");
-          int pixelsCopied = 0;
-          for (int y = 0; y < pasteHeight; y++) {
-            for (int x = 0; x < pasteWidth; x++) {
-              final srcX = x + (tx > 0 ? overlap * scale : 0);
-              final srcY = y + (ty > 0 ? overlap * scale : 0);
+                // Get pixel from processed tile
+                final pixel = processedTile.getPixel(x, y);
 
-              if (srcX < processedTile.width &&
-                  srcY < processedTile.height &&
-                  pasteX + x < outputImage.width &&
-                  pasteY + y < outputImage.height) {
-                // Get the color from the processed tile
-                final color = processedTile.getPixel(srcX, srcY);
-                // Set the color in the output image
-                outputImage.setPixel(pasteX + x, pasteY + y, color);
-                pixelsCopied++;
+                // Set pixel in output image
+                outputImage.setPixel(outX0 + x, outY0 + y, pixel);
               }
             }
           }
-          print("✅ [SR-Tiling] Copied $pixelsCopied pixels");
+          print("✅ [SR-Tiling] Tile copied to output");
         }
       }
 
@@ -325,6 +415,11 @@ class SuperResolutionProcessor {
     } catch (e) {
       print("❌ [SR-Tiling] Error in tiling process: $e");
       developer.log('Error in tiling process: $e', name: 'sr_processor');
+
+      // Check if this is a memory error
+      if (e.toString().contains('memory') || e.toString().contains('OutOfMemory')) {
+        throw Exception(ERROR_OUT_OF_MEMORY);
+      }
 
       // Fallback to simple resize if tiling fails
       print("⚠️ [SR-Tiling] Using fallback resize method");
@@ -410,7 +505,7 @@ class SuperResolutionProcessor {
         print("✅ Inference completed successfully");
       } catch (e) {
         print("❌ Error during inference: $e");
-        throw e;  // Re-throw for fallback handling
+        throw Exception(ERROR_TFLITE_FAILED);
       }
 
       // Create output image at the model's output size

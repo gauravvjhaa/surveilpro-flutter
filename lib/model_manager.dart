@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import '../model_types.dart';
+import 'model_types.dart';
 import 'dart:developer' as developer;
 
 class ModelInfo {
@@ -46,6 +46,8 @@ class ModelManager extends ChangeNotifier {
         ModelInfo(type: type)
     ).toList();
   }
+
+
 
   Future<void> initialize() async {
     try {
@@ -104,12 +106,14 @@ class ModelManager extends ChangeNotifier {
     }
   }
 
-  // New method to update preferences immediately
+  // Update this method in the ModelManager class to fix the issue with updates not being applied
   Future<void> updateModelPreference({
     required bool isVideo,
     required int scale,
     required ModelType? model
   }) async {
+    print('Updating model preference: isVideo=$isVideo, scale=$scale, model=${model?.readableName}');
+
     // Update in-memory state immediately
     if (isVideo) {
       switch (scale) {
@@ -135,12 +139,13 @@ class ModelManager extends ChangeNotifier {
 
       if (model != null) {
         await prefs.setString(key, model.name);
+        print('Saved preference: $key = ${model.name}');
       } else {
         await prefs.remove(key);
+        print('Removed preference: $key');
       }
     } catch (e) {
-      developer.log('Error saving preference: $e', name: 'model_manager');
-      // Don't throw error since the in-memory update already happened
+      print('Error saving preference: $e');
     }
   }
 
@@ -200,13 +205,18 @@ class ModelManager extends ChangeNotifier {
     return modelsDir;
   }
 
-  // Check which models are already downloaded
+  // Fix the check downloaded models method to ensure proper loading
   Future<void> _checkDownloadedModels() async {
     final dir = await modelsDir;
 
     for (final model in allModels) {
       final file = File('${dir.path}/${model.type.fileName}');
-      model.isDownloaded = await file.exists();
+      final exists = await file.exists();
+      model.isDownloaded = exists;
+
+      if (exists) {
+        print('Model ${model.type.readableName} is downloaded');
+      }
     }
   }
 
@@ -228,7 +238,7 @@ class ModelManager extends ChangeNotifier {
     return null;
   }
 
-  // Download a model
+  // Download a model with accurate progress tracking
   Future<bool> downloadModel(ModelType modelType) async {
     final modelInfo = allModels.firstWhere(
           (info) => info.type == modelType,
@@ -243,31 +253,50 @@ class ModelManager extends ChangeNotifier {
     try {
       final dir = await modelsDir;
       final file = File('${dir.path}/${modelType.fileName}');
+      final tempFile = File('${dir.path}/temp_${modelType.fileName}');
 
       // Create the client and request
       final client = http.Client();
       final request = http.Request('GET', Uri.parse(modelType.downloadUrl));
       final response = await client.send(request);
 
+      if (response.statusCode != 200) {
+        throw Exception('Failed to download model: HTTP ${response.statusCode}');
+      }
+
       final contentLength = response.contentLength ?? 0;
       int bytesReceived = 0;
 
-      final List<int> bytes = [];
+      // Set up file stream for writing
+      final fileStream = tempFile.openWrite();
+      int lastReportedPercentage = -1;
 
-      // Listen to the response stream
-      await response.stream.forEach((List<int> newBytes) {
-        bytes.addAll(newBytes);
-        bytesReceived += newBytes.length;
+      // Process the download in chunks for accurate progress
+      await for (final chunk in response.stream) {
+        bytesReceived += chunk.length;
+        fileStream.add(chunk);
 
+        // Only update the UI when percentage changes
         if (contentLength > 0) {
-          final progress = bytesReceived / contentLength;
-          modelInfo.downloadProgress = progress;
-          notifyListeners();
-        }
-      });
+          final percentage = (bytesReceived / contentLength * 100).round();
 
-      // Write the file when download completes
-      await file.writeAsBytes(bytes);
+          if (percentage != lastReportedPercentage) {
+            lastReportedPercentage = percentage;
+            modelInfo.downloadProgress = bytesReceived / contentLength;
+            notifyListeners();
+          }
+        }
+      }
+
+      // Close file stream
+      await fileStream.flush();
+      await fileStream.close();
+
+      // Move temp file to final location
+      if (await file.exists()) {
+        await file.delete();
+      }
+      await tempFile.rename(file.path);
 
       modelInfo.isDownloaded = true;
       modelInfo.isDownloading = false;
@@ -283,6 +312,15 @@ class ModelManager extends ChangeNotifier {
         stackTrace: stackTrace,
         name: 'model_manager',
       );
+
+      // Clean up temp file if download failed
+      try {
+        final dir = await modelsDir;
+        final tempFile = File('${dir.path}/temp_${modelType.fileName}');
+        if (await tempFile.exists()) {
+          await tempFile.delete();
+        }
+      } catch (_) {}
 
       modelInfo.isDownloading = false;
       modelInfo.downloadProgress = null;

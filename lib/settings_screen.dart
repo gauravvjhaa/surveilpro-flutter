@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'model_types.dart';
-import 'model_manager.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../model_manager.dart';
+import 'models_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({Key? key}) : super(key: key);
@@ -10,679 +12,435 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProviderStateMixin {
-  late TabController _tabController;
+class _SettingsScreenState extends State<SettingsScreen> {
+  String _appVersion = '';
+  bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _loadAppInfo();
   }
 
-  @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
+  Future<void> _loadAppInfo() async {
+    try {
+      final packageInfo = await PackageInfo.fromPlatform();
+      setState(() {
+        _appVersion = '${packageInfo.version} (${packageInfo.buildNumber})';
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _appVersion = 'Unknown';
+        _isLoading = false;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final modelManager = Provider.of<ModelManager>(context);
-
-    if (!modelManager.isInitialized) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('Settings')),
-        body: const Center(child: CircularProgressIndicator()),
-      );
-    }
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Settings'),
-        bottom: TabBar(
-          controller: _tabController,
-          tabs: const [
-            Tab(text: 'Preferences'),
-            Tab(text: 'Model Zoo'),
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        children: [
+          _buildSectionHeader('AI Enhancement'),
+
+          // AI Models
+          _buildSettingsCard(
+            child: Column(
+              children: [
+                _buildNavOption(
+                  title: 'AI Models',
+                  subtitle: 'Download and manage enhancement models',
+                  icon: Icons.auto_awesome,
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const ModelsScreen(),
+                      ),
+                    );
+                  },
+                ),
+
+                Consumer<ModelManager>(
+                  builder: (context, modelManager, _) {
+                    return FutureBuilder<Map<String, dynamic>>(
+                      future: modelManager.getStorageStats(),
+                      builder: (context, snapshot) {
+                        if (!snapshot.hasData) {
+                          return const SizedBox.shrink();
+                        }
+
+                        final stats = snapshot.data!;
+                        return Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.storage,
+                                size: 14,
+                                color: Colors.grey[600],
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                'Models: ${stats['used']} MB used',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey[600],
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+
+          _buildSettingsCard(
+            child: Column(
+              children: [
+                _buildSwitchOption(
+                  title: 'Auto-Download Models',
+                  subtitle: 'Download models when needed without asking',
+                  icon: Icons.download_for_offline,
+                  value: false, // Connect to actual setting
+                  onChanged: (value) {
+                    // Implement setting change
+                  },
+                ),
+
+                _buildSwitchOption(
+                  title: 'Save Original Images',
+                  subtitle: 'Keep a copy of the original unenhanced media',
+                  icon: Icons.photo_library,
+                  value: true, // Connect to actual setting
+                  onChanged: (value) {
+                    // Implement setting change
+                  },
+                ),
+              ],
+            ),
+          ),
+
+          _buildSectionHeader('Display'),
+
+          _buildSettingsCard(
+            child: Column(
+              children: [
+                _buildSwitchOption(
+                  title: 'Dark Mode',
+                  subtitle: 'Use dark theme throughout the app',
+                  icon: Icons.dark_mode,
+                  value: Theme.of(context).brightness == Brightness.dark,
+                  onChanged: (value) {
+                    // Implement theme change
+                  },
+                ),
+
+                _buildDropdownOption<String>(
+                  title: 'Language',
+                  icon: Icons.language,
+                  value: 'English',
+                  options: const ['English', 'Spanish', 'French', 'German'],
+                  onChanged: (newValue) {
+                    // Implement language change
+                  },
+                ),
+              ],
+            ),
+          ),
+
+          _buildSectionHeader('About'),
+
+          _buildSettingsCard(
+            child: Column(
+              children: [
+                _buildInfoItem(
+                  title: 'Version',
+                  value: _appVersion,
+                  icon: Icons.info_outline,
+                ),
+
+                _buildNavOption(
+                  title: 'Privacy Policy',
+                  icon: Icons.privacy_tip_outlined,
+                  onTap: () {
+                    _launchUrl('https://surveilpro.com/privacy');
+                  },
+                ),
+
+                _buildNavOption(
+                  title: 'Terms of Service',
+                  icon: Icons.description_outlined,
+                  onTap: () {
+                    _launchUrl('https://surveilpro.com/terms');
+                  },
+                ),
+
+                _buildNavOption(
+                  title: 'Contact Us',
+                  icon: Icons.mail_outline,
+                  onTap: () {
+                    _launchUrl('mailto:support@surveilpro.com');
+                  },
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader(String title) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+      child: Text(
+        title,
+        style: TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.bold,
+          color: Theme.of(context).colorScheme.primary,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSettingsCard({required Widget child}) {
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: Colors.grey.shade200,
+          width: 1,
+        ),
+      ),
+      child: child,
+    );
+  }
+
+  Widget _buildNavOption({
+    required String title,
+    String? subtitle,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primaryContainer,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                icon,
+                color: Theme.of(context).colorScheme.onPrimaryContainer,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 16,
+                    ),
+                  ),
+                  if (subtitle != null)
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right),
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [
-          _buildPreferencesTab(),
-          _buildModelZooTab(),
-        ],
-      ),
     );
   }
 
-  Widget _buildPreferencesTab() {
-    final modelManager = Provider.of<ModelManager>(context);
-    final downloadedModels = modelManager.downloadedModelTypes;
-    final hasDownloadedModels = downloadedModels.isNotEmpty;
-
-    return ListView(
+  Widget _buildSwitchOption({
+    required String title,
+    String? subtitle,
+    required IconData icon,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    return Padding(
       padding: const EdgeInsets.all(16),
-      children: [
-        // Error message if any
-        if (modelManager.errorMessage != null)
-          Card(
-            color: Colors.red.shade100,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text(
-                modelManager.errorMessage!,
-                style: TextStyle(color: Colors.red.shade900),
-              ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.primaryContainer,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              icon,
+              color: Theme.of(context).colorScheme.onPrimaryContainer,
             ),
           ),
-
-        // No models warning if needed
-        if (!hasDownloadedModels)
-          Card(
-            color: Colors.orange.shade100,
-            margin: const EdgeInsets.only(bottom: 16),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.warning_amber_rounded,
-                          color: Colors.orange.shade800),
-                      const SizedBox(width: 8),
-                      Text(
-                        'No Models Available',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: Colors.orange.shade800,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Please download at least one model from the Model Zoo tab '
-                        'before configuring preferences.',
-                  ),
-                  const SizedBox(height: 12),
-                  ElevatedButton.icon(
-                    onPressed: () {
-                      _tabController.animateTo(1); // Switch to Model Zoo tab
-                    },
-                    icon: const Icon(Icons.download),
-                    label: const Text('Go to Model Zoo'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-        // Models Section
-        Card(
-          elevation: 2,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
+          const SizedBox(width: 16),
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Icon(
-                      Icons.auto_awesome,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                    const SizedBox(width: 8),
-                    const Text(
-                      'Enhancement Models',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-                const Divider(),
-                const SizedBox(height: 8),
-
-                // Image Models Section
-                const Text(
-                  'Image Enhancement Models',
-                  style: TextStyle(
+                Text(
+                  title,
+                  style: const TextStyle(
                     fontSize: 16,
-                    fontWeight: FontWeight.w500,
                   ),
                 ),
-                const SizedBox(height: 16),
-
-                // Image x2 Model
-                _buildModelSelector(
-                  label: 'Image 2x Upscaling',
-                  value: modelManager.imageModelX2,
-                  availableModels: downloadedModels,
-                  isVideo: false,
-                  scale: 2,
-                  onChanged: hasDownloadedModels ? (_) {} : null,
-                ),
-
-                const SizedBox(height: 16),
-
-                // Image x3 Model
-                _buildModelSelector(
-                  label: 'Image 3x Upscaling',
-                  value: modelManager.imageModelX3,
-                  availableModels: downloadedModels,
-                  isVideo: false,
-                  scale: 3,
-                  onChanged: hasDownloadedModels ? (_) {} : null,
-                ),
-
-                const SizedBox(height: 16),
-
-                // Image x4 Model
-                _buildModelSelector(
-                  label: 'Image 4x Upscaling',
-                  value: modelManager.imageModelX4,
-                  availableModels: downloadedModels,
-                  isVideo: false,
-                  scale: 4,
-                  onChanged: hasDownloadedModels ? (_) {} : null,
-                ),
-
-                const SizedBox(height: 24),
-                const Divider(),
-                const SizedBox(height: 8),
-
-                // Video Models Section
-                const Text(
-                  'Video Enhancement Models',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 16),
-
-                // Video x2 Model
-                _buildModelSelector(
-                  label: 'Video 2x Upscaling',
-                  value: modelManager.videoModelX2,
-                  availableModels: downloadedModels,
-                  isVideo: true,
-                  scale: 2,
-                  onChanged: hasDownloadedModels ? (_) {} : null,
-                ),
-
-                const SizedBox(height: 16),
-
-                // Video x3 Model
-                _buildModelSelector(
-                  label: 'Video 3x Upscaling',
-                  value: modelManager.videoModelX3,
-                  availableModels: downloadedModels,
-                  isVideo: true,
-                  scale: 3,
-                  onChanged: hasDownloadedModels ? (_) {} : null,
-                ),
-
-                const SizedBox(height: 16),
-
-                // Video x4 Model
-                _buildModelSelector(
-                  label: 'Video 4x Upscaling',
-                  value: modelManager.videoModelX4,
-                  availableModels: downloadedModels,
-                  isVideo: true,
-                  scale: 4,
-                  onChanged: hasDownloadedModels ? (_) {} : null,
-                ),
-              ],
-            ),
-          ),
-        ),
-
-        const SizedBox(height: 24),
-
-        // Note that changes are applied immediately
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surface,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.grey.shade300),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                  Icons.info_outline,
-                  size: 18,
-                  color: Theme.of(context).colorScheme.primary
-              ),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Text(
-                  'Changes to preferences are saved automatically.',
-                  style: TextStyle(
-                    fontStyle: FontStyle.italic,
-                    fontSize: 13,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildModelZooTab() {
-    return Consumer<ModelManager>(
-        builder: (context, modelManager, child) {
-          return ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              // Introduction card
-              Card(
-                elevation: 2,
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(
-                            Icons.catching_pokemon,
-                            color: Theme.of(context).colorScheme.primary,
-                            size: 24,
-                          ),
-                          const SizedBox(width: 12),
-                          const Text(
-                            'AI Model Zoo',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      const Text(
-                        'Download AI models to enhance your images and videos. '
-                            'Models are processed locally on your device for privacy and speed.',
-                        style: TextStyle(fontSize: 14),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // Storage info
-              FutureBuilder(
-                  future: modelManager.getStorageStats(),
-                  builder: (context, snapshot) {
-                    String storageInfo = "Calculating storage usage...";
-
-                    if (snapshot.hasData) {
-                      final data = snapshot.data as Map<String, dynamic>;
-                      storageInfo = "Models storage: ${data['used']} MB used / ${data['free']} GB free";
-                    }
-
-                    return Padding(
-                      padding: const EdgeInsets.only(left: 8, bottom: 8),
-                      child: Row(
-                        children: [
-                          Icon(Icons.storage, size: 16, color: Colors.grey.shade700),
-                          const SizedBox(width: 8),
-                          Text(
-                            storageInfo,
-                            style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
-                          ),
-                        ],
-                      ),
-                    );
-                  }
-              ),
-
-              // Models grid
-              GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  childAspectRatio: 0.75,
-                  crossAxisSpacing: 10,
-                  mainAxisSpacing: 10,
-                ),
-                itemCount: modelManager.allModels.length,
-                itemBuilder: (context, index) {
-                  final model = modelManager.allModels[index];
-                  return _buildModelCard(model, modelManager);
-                },
-              ),
-            ],
-          );
-        }
-    );
-  }
-
-  Widget _buildModelCard(ModelInfo model, ModelManager modelManager) {
-    final isDownloading = model.isDownloading;
-    final isDownloaded = model.isDownloaded;
-    final progress = model.downloadProgress;
-
-    // Check if this model is selected in any preference
-    final isUsedInSettings =
-        modelManager.imageModelX2 == model.type ||
-            modelManager.imageModelX3 == model.type ||
-            modelManager.imageModelX4 == model.type ||
-            modelManager.videoModelX2 == model.type ||
-            modelManager.videoModelX3 == model.type ||
-            modelManager.videoModelX4 == model.type;
-
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      elevation: isDownloaded ? 4 : 1,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: isDownloaded
-            ? BorderSide(color: isUsedInSettings ? Colors.blue.shade400 : Colors.green.shade400, width: 2)
-            : BorderSide.none,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Model header with colored background
-          Container(
-            color: isDownloaded
-                ? (isUsedInSettings ? Colors.blue.shade50 : Colors.green.shade50)
-                : Colors.grey.shade100,
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  backgroundColor: isDownloaded
-                      ? (isUsedInSettings ? Colors.blue.shade400 : Colors.green.shade400)
-                      : Theme.of(context).colorScheme.primary.withOpacity(0.7),
-                  radius: 16,
-                  child: Icon(
-                    isDownloaded
-                        ? (isUsedInSettings ? Icons.star : Icons.check)
-                        : Icons.auto_awesome,
-                    color: Colors.white,
-                    size: 18,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    model.type.displayName,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Model size
-                  Row(
-                    children: [
-                      Icon(Icons.sd_card, size: 14, color: Colors.grey.shade700),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${model.type.sizeMB} MB',
-                        style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 8),
-
-                  // Model description
+                if (subtitle != null)
                   Text(
-                    model.type.description,
-                    style: const TextStyle(fontSize: 12),
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[600],
+                    ),
                   ),
-
-                  const Spacer(),
-
-                  // Usage label if applicable
-                  if (isUsedInSettings && isDownloaded)
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                      margin: const EdgeInsets.only(bottom: 8),
-                      decoration: BoxDecoration(
-                        color: Colors.blue.shade100,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        'Currently in use',
-                        style: TextStyle(
-                          fontSize: 10,
-                          color: Colors.blue.shade800,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-
-                  // Status indicator or progress bar
-                  if (isDownloading && progress != null) ...[
-                    LinearProgressIndicator(
-                      value: progress,
-                      backgroundColor: Colors.grey.shade200,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Downloading: ${(progress * 100).toInt()}%',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                    ),
-                  ] else if (isDownloaded) ...[
-                    OutlinedButton.icon(
-                      onPressed: () => _confirmDeleteModel(context, model.type, modelManager),
-                      icon: const Icon(Icons.delete_outline, size: 16),
-                      label: const Text('Delete'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.red,
-                        minimumSize: const Size.fromHeight(32),
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        textStyle: const TextStyle(fontSize: 12),
-                      ),
-                    ),
-                  ] else ...[
-                    ElevatedButton.icon(
-                      onPressed: () async {
-                        final success = await modelManager.downloadModel(model.type);
-                        if (mounted && success) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('${model.type.displayName} downloaded successfully'),
-                              backgroundColor: Colors.green,
-                            ),
-                          );
-                        }
-                      },
-                      icon: const Icon(Icons.download, size: 16),
-                      label: const Text('Download'),
-                      style: ElevatedButton.styleFrom(
-                        minimumSize: const Size.fromHeight(32),
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        textStyle: const TextStyle(fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
+              ],
             ),
+          ),
+          Switch(
+            value: value,
+            onChanged: onChanged,
+            activeColor: Theme.of(context).colorScheme.primary,
           ),
         ],
       ),
     );
   }
 
-  Future<void> _confirmDeleteModel(BuildContext context, ModelType modelType, ModelManager modelManager) async {
-    final isUsedInSettings =
-        modelManager.imageModelX2 == modelType ||
-            modelManager.imageModelX3 == modelType ||
-            modelManager.imageModelX4 == modelType ||
-            modelManager.videoModelX2 == modelType ||
-            modelManager.videoModelX3 == modelType ||
-            modelManager.videoModelX4 == modelType;
-
-    final shouldDelete = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(isUsedInSettings ? 'Model In Use' : 'Delete Model?'),
-        content: Text(
-            isUsedInSettings
-                ? '${modelType.displayName} is currently selected for use. '
-                'Deleting it will reset any settings using this model.\n\n'
-                'Are you sure you want to delete it?'
-                : 'Are you sure you want to delete ${modelType.displayName}? '
-                'You can download it again later if needed.'
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('CANCEL'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            style: TextButton.styleFrom(
-              foregroundColor: Colors.red,
-            ),
-            child: const Text('DELETE'),
-          ),
-        ],
-      ),
-    );
-
-    if (shouldDelete == true) {
-      final success = await modelManager.deleteModel(modelType);
-      if (mounted) {
-        if (success) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('${modelType.displayName} deleted successfully'),
-            ),
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to delete ${modelType.displayName}'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-      }
-    }
-  }
-
-  Widget _buildModelSelector({
-    required String label,
-    required ModelType? value,
-    required List<ModelType> availableModels,
-    required bool isVideo,
-    required int scale,
-    ValueChanged<ModelType?>? onChanged,
+  Widget _buildInfoItem({
+    required String title,
+    required String value,
+    required IconData icon,
   }) {
-    final modelManager = Provider.of<ModelManager>(context, listen: false);
-
-    return Row(
-      children: [
-        Expanded(
-          flex: 2,
-          child: Text(label),
-        ),
-        Expanded(
-          flex: 3,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.primaryContainer,
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: onChanged == null
-                    ? Colors.grey.shade300
-                    : Theme.of(context).primaryColor.withOpacity(0.5),
-              ),
             ),
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<ModelType>(
-                value: value,
-                isExpanded: true,
-                onChanged: onChanged == null ? null : (newValue) {
-                  // Update the model preference immediately
-                  modelManager.updateModelPreference(
-                      isVideo: isVideo,
-                      scale: scale,
-                      model: newValue
-                  );
-
-                  // Show feedback
-                  if (newValue != null && mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('${newValue.displayName} selected for $scale× ${isVideo ? 'video' : 'image'} enhancement'),
-                        duration: const Duration(seconds: 1),
-                        behavior: SnackBarBehavior.floating,
-                      ),
-                    );
-                  }
-                },
-                hint: Text(
-                  onChanged == null
-                      ? 'No models available'
-                      : 'Select a model',
+            child: Icon(
+              icon,
+              color: Theme.of(context).colorScheme.onPrimaryContainer,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 16,
+                  ),
+                ),
+                Text(
+                  value,
                   style: TextStyle(
                     fontSize: 14,
-                    color: Colors.grey.shade600,
-                    fontStyle: FontStyle.italic,
+                    color: Colors.grey[600],
                   ),
                 ),
-                items: availableModels.map((ModelType type) {
-                  return DropdownMenuItem<ModelType>(
-                    value: type,
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.check_circle,
-                          size: 14,
-                          color: Colors.green,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            type.displayName,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                }).toList(),
-              ),
+              ],
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
+  }
+
+  Widget _buildDropdownOption<T>({
+    required String title,
+    required IconData icon,
+    required T value,
+    required List<T> options,
+    required ValueChanged<T?> onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.primaryContainer,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              icon,
+              color: Theme.of(context).colorScheme.onPrimaryContainer,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 16,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          DropdownButton<T>(
+            value: value,
+            icon: const Icon(Icons.arrow_drop_down),
+            underline: const SizedBox(),
+            onChanged: onChanged,
+            items: options.map<DropdownMenuItem<T>>((T value) {
+              return DropdownMenuItem<T>(
+                value: value,
+                child: Text(value.toString()),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _launchUrl(String url) async {
+    if (!await launchUrl(Uri.parse(url))) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not launch URL')),
+      );
+    }
   }
 }
