@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
@@ -72,6 +74,31 @@ class _SuperResolutionScreenState extends State<SuperResolutionScreen> with Tick
     super.dispose();
   }
 
+  // Add this field to your class
+  Map<String, dynamic>? _enhancedVideoInfo;
+
+  // Add this method
+  void _setupEnhancedVideoPlayer() {
+    if (_enhancedVideoInfo == null || _enhancedFile == null) {
+      print("❌ Missing video info or file");
+      return;
+    }
+
+    final framesDirectory = _enhancedVideoInfo!['framesDirectory'];
+
+    // Debug verification
+    print("🔍 Frames directory: $framesDirectory");
+    Directory(framesDirectory).exists().then((exists) {
+      print(exists ? "✅ Directory exists" : "❌ Directory doesn't exist");
+      if (exists) {
+        Directory(framesDirectory).list().toList().then((files) {
+          print("📁 Found ${files.length} files in directory");
+        });
+      }
+    });
+  }
+
+
   Future<void> _requestPermissions() async {
     // Request permissions for camera, storage and saving to gallery
     await [
@@ -79,6 +106,59 @@ class _SuperResolutionScreenState extends State<SuperResolutionScreen> with Tick
       Permission.storage,
       Permission.photos,
     ].request();
+  }
+
+  // Save enhanced video frames
+  Future<void> _saveEnhancedVideo() async {
+    if (_enhancedFile == null || _enhancedVideoInfo == null) return;
+
+    try {
+      final loadingOverlay = _showLoadingOverlay('Saving enhanced video frames...');
+
+      // Save the sample frame (first frame) to gallery
+      final result = await ImageSaver.saveToGallery(_enhancedFile!);
+
+      // You could save more frames here
+
+      loadingOverlay.remove();
+
+      if (result['isSuccess']) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Enhanced video frames saved to gallery'),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      } else {
+        throw Exception(result['error'] ?? 'Failed to save video');
+      }
+    } catch (e) {
+      _showError('Failed to save video: $e');
+    }
+  }
+
+// Share enhanced video
+  Future<void> _shareEnhancedVideo() async {
+    if (_enhancedFile == null) return;
+
+    try {
+      final loadingOverlay = _showLoadingOverlay('Preparing to share...');
+
+      try {
+        await ImageSaver.shareImage(
+          _enhancedFile!,
+          text: 'Enhanced ${_enhancementScale}x video frame from SurveilPro',
+        );
+        loadingOverlay.remove();
+      } catch (e) {
+        loadingOverlay.remove();
+        throw e;
+      }
+    } catch (e) {
+      _showError('Failed to share video: $e');
+    }
   }
 
   Future<void> _pickImage(ImageSource source) async {
@@ -503,6 +583,7 @@ class _SuperResolutionScreenState extends State<SuperResolutionScreen> with Tick
     });
 
     try {
+      SuperResolutionProcessor.resetTFLiteAvailability();
       final modelManager = Provider.of<ModelManager>(context, listen: false);
 
       // Get the model type from preferences
@@ -565,22 +646,124 @@ class _SuperResolutionScreenState extends State<SuperResolutionScreen> with Tick
             rethrow;
           }
         }
-      } else {
-        // For video, show simulated progress with stages
+      } else if (_mediaType == MediaType.video) {
         setState(() {
-          _processingStage = "Analyzing video frames...";
+          _processingStage = "Analyzing video...";
         });
 
-        // Simulate video processing with realistic stages
-        await _simulateVideoProcessing();
+        // Use modal barrier to prevent touch during processing
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (BuildContext context) {
+            return WillPopScope(
+              onWillPop: () async => false, // Prevent back button
+              child: const SizedBox.shrink(), // Transparent dialog
+            );
+          },
+        );
 
-        if (mounted) {
-          setState(() {
-            _isProcessing = false;
-          });
+        try {
+          final enhancedVideoResult = await SuperResolutionProcessor.enhanceVideo(
+            inputFile: _inputFile!,
+            modelType: modelType,
+            scale: _enhancementScale,
+            onProgress: (progress, stage) {
+              if (mounted) {
+                setState(() {
+                  _processingProgress = progress;
+                  _processingStage = stage;
+                });
+              }
+            },
+          );
 
-          // Show success dialog for video
-          _showSuccessDialog();
+          // Pop the barrier
+          Navigator.of(context).pop();
+
+          if (mounted && enhancedVideoResult != null) {
+            // Extract directory path and metadata from result
+            final jsonFile = File('${enhancedVideoResult.path.split('/').sublist(0, enhancedVideoResult.path.split('/').length - 2).join('/')}/video_info.json');
+            // When reading the video info JSON
+            Map<String, dynamic> videoInfo = {};
+            try {
+              if (await jsonFile.exists()) {
+                final jsonString = await jsonFile.readAsString();
+                videoInfo = json.decode(jsonString);
+                print("📊 Video info loaded: $videoInfo"); // Debug print
+              }
+            } catch (e) {
+              print("❌ Error reading video info: $e");
+            }
+
+            setState(() {
+              _enhancedFile = enhancedVideoResult;
+              _enhancedVideoInfo = videoInfo; // Add this field to your class
+              _isShowingEnhanced = true;
+              _isProcessing = false;
+            });
+
+            // Reset original video player
+            await _videoController?.pause();
+            _setupEnhancedVideoPlayer();
+          } else {
+            throw Exception("Failed to enhance video");
+          }
+        } catch (e) {
+          // Pop the barrier
+          Navigator.of(context).pop();
+
+          if (mounted) {
+            setState(() {
+              _isProcessing = false;
+            });
+
+            if (e.toString().contains('memory') || e.toString().contains('OutOfMemory')) {
+              _showOutOfMemoryError();
+            } else {
+              _showError("Video processing failed: ${e.toString()}");
+            }
+          }
+        }
+      }
+
+
+      else {
+        setState(() {
+          _processingStage = "Analyzing video...";
+        });
+
+        try {
+          final enhancedFile = await SuperResolutionProcessor.enhanceVideo(
+            inputFile: _inputFile!,
+            modelType: modelType,
+            scale: _enhancementScale,
+            onProgress: (progress, stage) {
+              if (mounted) {
+                setState(() {
+                  _processingProgress = progress;
+                  _processingStage = stage;
+                });
+              }
+            },
+          );
+
+          if (mounted) {
+            setState(() {
+              _enhancedFile = enhancedFile;
+              _isShowingEnhanced = enhancedFile != null;
+              _isProcessing = false;
+            });
+
+            // Show completed dialog
+            _showEnhancedVideoDialog(enhancedFile);
+          }
+        } catch (e) {
+          if (e.toString().contains('memory') || e.toString().contains('OutOfMemory')) {
+            _showOutOfMemoryError();
+          } else {
+            rethrow;
+          }
         }
       }
     } catch (e) {
@@ -597,6 +780,78 @@ class _SuperResolutionScreenState extends State<SuperResolutionScreen> with Tick
       }
     }
   }
+
+  void _showEnhancedVideoDialog(File? sampleFrame) {
+    final mediaQuery = MediaQuery.of(context);
+    final dialogWidth = mediaQuery.size.width * 0.8;
+    final maxHeight = mediaQuery.size.height * 0.6;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        contentPadding: EdgeInsets.zero,
+        content: SingleChildScrollView( // Wrap in SingleChildScrollView for safety
+          child: ConstrainedBox( // Add constraints
+            constraints: BoxConstraints(
+              maxWidth: dialogWidth,
+              maxHeight: maxHeight,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (sampleFrame != null)
+                  ClipRRect(
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                    child: ConstrainedBox( // Constrain image size
+                      constraints: BoxConstraints(
+                        maxHeight: maxHeight * 0.6,
+                        maxWidth: dialogWidth,
+                      ),
+                      child: Image.file(
+                        sampleFrame,
+                        fit: BoxFit.contain, // Use contain instead of cover
+                      ),
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    children: [
+                      const Text(
+                        'Video Enhanced!',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Your video has been enhanced with ${_enhancementScale}x AI upscaling.',
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'Enhanced frames are saved in your temporary directory.',
+                        style: TextStyle(fontStyle: FontStyle.italic, fontSize: 12),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
 
   // Show specialized out of memory error
   void _showOutOfMemoryError() {
@@ -775,7 +1030,7 @@ class _SuperResolutionScreenState extends State<SuperResolutionScreen> with Tick
         ),
         content: Text(
           'Your ${_mediaType == MediaType.image ? 'image' : 'video'} has been enhanced by ${_enhancementScale}x. '
-              '${_mediaType == MediaType.video ? 'Video enhancement is simulated in this version.' : ''}',
+              '${_mediaType == MediaType.video ? 'Video has been enhanced.' : ''}',
           style: const TextStyle(fontSize: 16),
         ),
         actions: [
@@ -1324,16 +1579,23 @@ class _SuperResolutionScreenState extends State<SuperResolutionScreen> with Tick
                 Stack(
                   alignment: Alignment.center,
                   children: [
+                    // In _buildVideoPreview(), replace the video player section with:
                     AspectRatio(
                       aspectRatio: _isVideoInitialized && _videoController != null
                           ? _videoController!.value.aspectRatio
                           : 16/9,
-                      child: _isVideoInitialized && _videoController != null
+                      child: _enhancedFile != null && _isShowingEnhanced
+                          ? // When initializing the player, pass only the directory:
+                      EnhancedFramePlayer(
+                        framesDirectory: _enhancedVideoInfo!['framesDirectory'],
+                        fps: (_enhancedVideoInfo!['fps'] ?? 10.0) as double,
+                      )
+                          : (_isVideoInitialized && _videoController != null
                           ? VideoPlayer(_videoController!)
                           : Container(
                         color: Colors.black,
                         child: const Center(child: CircularProgressIndicator()),
-                      ),
+                      )),
                     ),
                     if (_isVideoInitialized && _videoController != null && !_isProcessing)
                       GestureDetector(
@@ -1445,6 +1707,54 @@ class _SuperResolutionScreenState extends State<SuperResolutionScreen> with Tick
                             }
                             return const SizedBox.shrink();
                           },
+                        ),
+                      ],
+                    ),
+                  ),
+                // Add this inside your Stack in _buildVideoPreview()
+                if (!_isProcessing && _enhancedFile != null)
+                  Positioned(
+                    bottom: 12,
+                    right: 12,
+                    child: Row(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: IconButton(
+                            onPressed: _saveEnhancedVideo,
+                            icon: const Icon(Icons.save_alt),
+                            tooltip: 'Save to Gallery',
+                            style: IconButton.styleFrom(
+                              backgroundColor: Colors.white,
+                              foregroundColor: Colors.green,
+                            ),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: IconButton(
+                            onPressed: _shareEnhancedVideo,
+                            icon: const Icon(Icons.share),
+                            tooltip: 'Share Video',
+                            style: IconButton.styleFrom(
+                              backgroundColor: Colors.white,
+                              foregroundColor: Colors.blue,
+                            ),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: IconButton(
+                            onPressed: _toggleBeforeAfter, // Reuse the same toggle method
+                            icon: Icon(_isShowingEnhanced
+                                ? Icons.visibility_outlined
+                                : Icons.visibility),
+                            tooltip: _isShowingEnhanced ? 'Show Original' : 'Show Enhanced',
+                            style: IconButton.styleFrom(
+                              backgroundColor: Colors.white,
+                              foregroundColor: Theme.of(context).colorScheme.primary,
+                            ),
+                          ),
                         ),
                       ],
                     ),
@@ -1784,6 +2094,225 @@ class _ComparisonSliderState extends State<_ComparisonSlider> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class EnhancedFramePlayer extends StatefulWidget {
+  final String framesDirectory;
+  final double fps;
+
+  const EnhancedFramePlayer({
+    Key? key,
+    required this.framesDirectory,
+    this.fps = 10.0,
+  }) : super(key: key);
+
+  @override
+  _EnhancedFramePlayerState createState() => _EnhancedFramePlayerState();
+}
+
+class _EnhancedFramePlayerState extends State<EnhancedFramePlayer> {
+  List<File> _frames = [];
+  int _currentFrameIndex = 0;
+  Timer? _timer;
+  bool _isPlaying = false;
+  bool _isLoading = true;
+  String _debugInfo = "";
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFrames();
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadFrames() async {
+    setState(() {
+      _isLoading = true;
+      _debugInfo = "Loading frames...";
+    });
+
+    try {
+      // Ensure directory exists
+      final directory = Directory(widget.framesDirectory);
+      if (await directory.exists()) {
+        // List all jpg files in the directory
+        final entities = await directory.list().toList();
+        final files = entities
+            .where((e) => e is File && e.path.toLowerCase().endsWith('.jpg'))
+            .map((e) => e as File)
+            .toList();
+
+        // Debug info
+        _debugInfo = "Found ${files.length} frames";
+
+        if (files.isNotEmpty) {
+          // Sort files by their frame number (assuming format frame_XXXX.jpg)
+          files.sort((a, b) {
+            final nameA = a.path.split('/').last;
+            final nameB = b.path.split('/').last;
+            return nameA.compareTo(nameB);
+          });
+
+          setState(() {
+            _frames = files;
+            _isLoading = false;
+            _debugInfo = "Loaded ${_frames.length} frames";
+          });
+
+          // Start playback after a short delay to let UI update
+          Future.delayed(Duration(milliseconds: 300), () {
+            if (mounted) _startPlayback();
+          });
+        } else {
+          setState(() {
+            _isLoading = false;
+            _debugInfo = "No frame files found in directory";
+          });
+        }
+      } else {
+        setState(() {
+          _isLoading = false;
+          _debugInfo = "Directory doesn't exist: ${widget.framesDirectory}";
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+        _debugInfo = "Error loading frames: $e";
+      });
+    }
+  }
+
+  void _startPlayback() {
+    if (_isPlaying || _frames.isEmpty) return;
+
+    final frameDelay = (1000 / widget.fps).round();
+    _debugInfo = "Playing at ${widget.fps} fps (${frameDelay}ms delay)";
+
+    _timer = Timer.periodic(Duration(milliseconds: frameDelay), (_) {
+      if (mounted) {
+        setState(() {
+          _currentFrameIndex = (_currentFrameIndex + 1) % _frames.length;
+        });
+      }
+    });
+
+    setState(() {
+      _isPlaying = true;
+    });
+  }
+
+  void _stopPlayback() {
+    _timer?.cancel();
+    _timer = null;
+
+    if (mounted) {
+      setState(() {
+        _isPlaying = false;
+      });
+    }
+  }
+
+  void _togglePlayback() {
+    if (_isPlaying) {
+      _stopPlayback();
+    } else {
+      _startPlayback();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text("Loading enhanced frames...",
+                style: TextStyle(color: Colors.white))
+          ],
+        ),
+      );
+    }
+
+    if (_frames.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 48),
+            SizedBox(height: 16),
+            Text("No frames found", style: TextStyle(color: Colors.white)),
+            SizedBox(height: 8),
+            Text(_debugInfo,
+                style: TextStyle(color: Colors.white70, fontSize: 12)),
+          ],
+        ),
+      );
+    }
+
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        // Current frame
+        Image.file(
+          _frames[_currentFrameIndex],
+          fit: BoxFit.contain,
+          frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+            return child;
+          },
+          errorBuilder: (context, error, stackTrace) {
+            return Center(
+              child: Text("Error loading frame: $error",
+                  style: TextStyle(color: Colors.red)),
+            );
+          },
+        ),
+
+        // Play/pause button
+        GestureDetector(
+          onTap: _togglePlayback,
+          child: Container(
+            width: 60,
+            height: 60,
+            decoration: BoxDecoration(
+              color: Colors.black45,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              _isPlaying ? Icons.pause : Icons.play_arrow,
+              size: 30,
+              color: Colors.white,
+            ),
+          ),
+        ),
+
+        // Frame counter for debugging
+        Positioned(
+          top: 10,
+          right: 10,
+          child: Container(
+            padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.black45,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              "Frame ${_currentFrameIndex + 1}/${_frames.length}",
+              style: TextStyle(color: Colors.white, fontSize: 12),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

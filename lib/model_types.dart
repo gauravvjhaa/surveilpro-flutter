@@ -58,12 +58,12 @@ extension ModelTypeExtension on ModelType {
 
   String get fileName {
     switch (this) {
-      case ModelType.realEsrganX2: return "realesrgan_x2.tflite";
-      case ModelType.realEsrganX3: return "realesrgan_x3.tflite";
+      case ModelType.realEsrganX2: return "realesrgan_x2plus_float16.tflite"; // Fix this line
+      case ModelType.realEsrganX3: return "realesrgan_x2plus_float16.tflite"; // Uses x2 file for x3
       case ModelType.realEsrganX4: return "realesrgan_x4plus_float16.tflite";
-      case ModelType.surveilProX2: return "surveilpro_hat_x2.tflite";
-      case ModelType.surveilProX3: return "surveilpro_hat_x3.tflite";
-      case ModelType.surveilProX4: return "surveilpro_hat_x4.tflite";
+      case ModelType.surveilProX2: return "hat_x2_float16.tflite";
+      case ModelType.surveilProX3: return "hat_x3_float16.tflite";
+      case ModelType.surveilProX4: return "hat_x4_float16.tflite";
     }
   }
 
@@ -81,29 +81,33 @@ extension ModelTypeExtension on ModelType {
   // CONFIGURABLE: Update these sizes with actual values when available
   double get sizeInMB {
     switch (this) {
-      case ModelType.realEsrganX2: return 22.5;
-      case ModelType.realEsrganX3: return 28.3;
+      case ModelType.realEsrganX2: return 32.2;
+      case ModelType.realEsrganX3: return 32.2;
       case ModelType.realEsrganX4: return 32.2;
-      case ModelType.surveilProX2: return 36.1;
-      case ModelType.surveilProX3: return 42.4;
-      case ModelType.surveilProX4: return 48.7;
+      case ModelType.surveilProX2: return 78.6;
+      case ModelType.surveilProX3: return 78.9;
+      case ModelType.surveilProX4: return 78.9;
     }
   }
 
   // CONFIGURABLE: Replace these URLs with your actual GitHub Release URLs
   String get downloadUrl {
-    // Placeholder GitHub releases URL structure - update as needed
-    const baseUrl = "https://github.com/username/surveilpro-models/releases/download/v1.0";
-
     switch (this) {
-      case ModelType.realEsrganX2: return "$baseUrl/${fileName}";
-      case ModelType.realEsrganX3: return "$baseUrl/${fileName}";
-      case ModelType.realEsrganX4: return "$baseUrl/${fileName}";
-      case ModelType.surveilProX2: return "$baseUrl/${fileName}";
-      case ModelType.surveilProX3: return "$baseUrl/${fileName}";
-      case ModelType.surveilProX4: return "$baseUrl/${fileName}";
+      case ModelType.realEsrganX2:
+        return "https://github.com/gauravvjhaa/surveilpro-flutter/releases/download/tflitemodels/realesrgan_x2plus_float16.tflite";
+      case ModelType.realEsrganX3:
+        return "https://github.com/gauravvjhaa/surveilpro-flutter/releases/download/tflitemodels/realesrgan_x3.tflite"; // Not available? fallback link or fix
+      case ModelType.realEsrganX4:
+        return "https://github.com/gauravvjhaa/surveilpro-flutter/releases/download/tflitemodels/realesrgan_x4plus_float16.tflite";
+      case ModelType.surveilProX2:
+        return "https://github.com/gauravvjhaa/surveilpro-flutter/releases/download/tflitemodels/hat_x2_float16.tflite";
+      case ModelType.surveilProX3:
+        return "https://github.com/gauravvjhaa/surveilpro-flutter/releases/download/tflitemodels/hat_x3_float16.tflite";
+      case ModelType.surveilProX4:
+        return "https://github.com/gauravvjhaa/surveilpro-flutter/releases/download/tflitemodels/hat_x4_float16.tflite";
     }
   }
+
 
   // Get appropriate icon for the model type
   IconData get icon {

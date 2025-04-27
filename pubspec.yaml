@@ -23,6 +23,11 @@ dependencies:
   package_info_plus: ^8.3.0
   url_launcher: ^6.3.1
   share_plus: ^10.1.4
+#  video_thumbnail: ^0.5.3
+#  flutter_native_screenshot: ^1.1.2
+  video_compress: ^3.1.4
+  webview_flutter: ^4.11.0
+#  ffmpeg_kit_flutter: ^6.0.3
 
 dev_dependencies:
   flutter_test:

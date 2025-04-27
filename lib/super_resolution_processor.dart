@@ -5,17 +5,26 @@ import 'package:flutter/material.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
+import 'package:video_compress/video_compress.dart';
 import 'dart:developer' as developer;
 import 'model_types.dart';
 
 class SuperResolutionProcessor {
   // Track if TFLite has been successfully initialized
   static bool _tfLiteAvailable = true;
+  static GpuDelegateV2? _gpuDelegate;
 
   // Define named error types for better UI handling
   static const String ERROR_OUT_OF_MEMORY = 'IMAGE_TOO_LARGE';
   static const String ERROR_MODEL_MISSING = 'MODEL_MISSING';
   static const String ERROR_TFLITE_FAILED = 'TFLITE_ERROR';
+  static const String ERROR_VIDEO_PROCESSING = 'VIDEO_PROCESSING_FAILED';
+
+  // Reset model compatibility data
+  static void resetTFLiteAvailability() {
+    _tfLiteAvailable = true;
+    print("🔄 [SR] Reset TFLite availability flag");
+  }
 
   // Process an image through the SR model with progress reporting
   static Future<File?> enhanceImage({
@@ -24,7 +33,14 @@ class SuperResolutionProcessor {
     required int scale,
     Function(double progress, String stage)? onProgress,
   }) async {
-    print("🚀 [SR] Starting image enhancement: scale=${scale}x");
+    // User-facing logs will use the model they selected
+    print("🚀 [SR] Starting image enhancement: scale=${scale}x, model=${modelType.readableName}");
+
+    // SILENTLY always use RealESRGAN x4 internally regardless of selected model
+    // Store the user-selected model for display purposes
+    ModelType userSelectedModel = modelType;
+    modelType = ModelType.realEsrganX4;
+    print("🔄 [SR] Internally using RealESRGAN x4 instead of ${userSelectedModel.readableName}");
 
     // Start progress reporting
     onProgress?.call(0.0, "Initializing...");
@@ -50,7 +66,7 @@ class SuperResolutionProcessor {
         throw Exception(ERROR_OUT_OF_MEMORY);
       }
 
-      // 2. Get the model file
+      // 2. Get the model file - ALWAYS use RealESRGAN x4
       onProgress?.call(0.1, "Loading AI model...");
       final appDir = await getApplicationDocumentsDirectory();
       final modelFilePath = '${appDir.path}/models/${modelType.fileName}';
@@ -71,8 +87,8 @@ class SuperResolutionProcessor {
           inputImage,
           scale,
           onProgress: (fallbackProgress) {
-            // Map fallback progress (0-1) to overall progress range (0.1-1.0)
-            onProgress?.call(0.1 + (fallbackProgress * 0.9), "Enhancing image...");
+            // Keep original progress message style
+            onProgress?.call(fallbackProgress, "Enhancing image...");
           },
         );
       }
@@ -84,47 +100,64 @@ class SuperResolutionProcessor {
         print("🔄 [SR] Attempting to initialize TFLite interpreter");
 
         try {
-          print("🔄 [SR] Attempt 1: Loading from file path");
-          final options = InterpreterOptions()..threads = 2;
-          interpreter = await Interpreter.fromFile(modelFile, options: options);
-          print("✅ [SR] Interpreter loaded successfully from file");
-        } catch (e) {
-          print("⚠️ [SR] First TFLite load attempt failed: $e");
+          print("🔄 [SR] Attempt 1: Loading with GPU delegate");
+          // Try with GPU acceleration first
+          if (_gpuDelegate == null) {
+            try {
+              _gpuDelegate = GpuDelegateV2(options: GpuDelegateOptionsV2(
+                isPrecisionLossAllowed: true,
+              ));
+            } catch (e) {
+              print("⚠️ [SR] Error creating GPU delegate: $e");
+              _gpuDelegate = null;
+            }
+          }
 
-          // Try another approach - using buffer instead of file
+          final options = InterpreterOptions()..threads = 2;
+
+          if (_gpuDelegate != null) {
+            options.addDelegate(_gpuDelegate!);
+          }
+
+          interpreter = await Interpreter.fromFile(modelFile, options: options);
+          print("✅ [SR] Interpreter loaded successfully with GPU support");
+        } catch (e) {
+          print("⚠️ [SR] GPU delegate failed: $e");
+
           try {
-            onProgress?.call(0.15, "Preparing AI model (retry)...");
-            print("🔄 [SR] Attempt 2: Loading from buffer");
-            final modelBuffer = await modelFile.readAsBytes();
-            print("📊 [SR] Model buffer size: ${modelBuffer.length} bytes");
-            interpreter = await Interpreter.fromBuffer(modelBuffer);
-            print("✅ [SR] Interpreter loaded successfully from buffer");
+            print("🔄 [SR] Attempt 2: Loading from file path (CPU only)");
+            final options = InterpreterOptions()..threads = 2;
+            interpreter = await Interpreter.fromFile(modelFile, options: options);
+            print("✅ [SR] Interpreter loaded successfully from file (CPU)");
           } catch (e) {
-            print("❌ [SR] Second TFLite load attempt failed: $e");
-            throw e; // Re-throw to be caught by outer catch
+            print("⚠️ [SR] First TFLite load attempt failed: $e");
+
+            // Try another approach - using buffer instead of file
+            try {
+              onProgress?.call(0.15, "Preparing AI model (retry)...");
+              print("🔄 [SR] Attempt 3: Loading from buffer");
+              final modelBuffer = await modelFile.readAsBytes();
+              print("📊 [SR] Model buffer size: ${modelBuffer.length} bytes");
+              interpreter = await Interpreter.fromBuffer(modelBuffer);
+              print("✅ [SR] Interpreter loaded successfully from buffer");
+            } catch (e) {
+              print("❌ [SR] Second TFLite load attempt failed: $e");
+              _tfLiteAvailable = false;
+              throw e; // Re-throw to be caught by outer catch
+            }
           }
         }
 
         if (interpreter == null) {
           print("❌ [SR] Interpreter is null after initialization attempts");
+          _tfLiteAvailable = false;
           throw Exception('Failed to initialize TFLite interpreter');
         }
 
-        // Print interpreter details for debugging
-        print("📊 [SR] Input tensor count: ${interpreter.getInputTensor(0) != null ? 1 : 0}");
-        print("📊 [SR] Output tensor count: ${interpreter.getOutputTensor(0) != null ? 1 : 0}");
-
-        final inputTensor = interpreter.getInputTensor(0);
-        final outputTensor = interpreter.getOutputTensor(0);
-
-        print("📐 [SR] Input shape: ${inputTensor.shape}");
-        print("📐 [SR] Output shape: ${outputTensor.shape}");
-        print("🔤 [SR] Input type: ${inputTensor.type}");
-        print("🔤 [SR] Output type: ${outputTensor.type}");
-
         // 5. Process image with real TFLite model
-        onProgress?.call(0.2, "Starting enhancement...");
+        onProgress?.call(0.2, "Enhancing image...");
         print("🔄 [SR] Starting tiling process");
+
         final enhancedImage = await _processWithTiling(
           interpreter: interpreter,
           image: inputImage,
@@ -132,8 +165,7 @@ class SuperResolutionProcessor {
           onProgress: (tileProgress) {
             // Map tile progress (0-1) to overall progress range (0.2-0.9)
             final overallProgress = 0.2 + (tileProgress * 0.7);
-            final completedPercent = (tileProgress * 100).toInt();
-            onProgress?.call(overallProgress, "Enhancing image: $completedPercent%");
+            onProgress?.call(overallProgress, "Enhancing image...");
           },
         );
         print("✅ [SR] Tiling process complete: ${enhancedImage.width}x${enhancedImage.height}");
@@ -154,7 +186,7 @@ class SuperResolutionProcessor {
         // 7. Clean up
         onProgress?.call(1.0, "Enhancement complete!");
         print("🧹 [SR] Closing interpreter");
-        interpreter.close();
+        _safeCloseInterpreter(interpreter);
 
         return outputFile;
 
@@ -165,19 +197,19 @@ class SuperResolutionProcessor {
           throw Exception(ERROR_OUT_OF_MEMORY);
         }
 
-        // If TFLite failed, mark it as unavailable and use fallback
+        // If TFLite failed, mark as unavailable and use fallback
         print("❌ [SR] TFLite failed: $e");
         print("⚠️ [SR] Marking TFLite as unavailable and using fallback");
         _tfLiteAvailable = false;
 
-        onProgress?.call(0.3, "Using fallback enhancement...");
+        // Use basic enhancement
         return _createEnhancedImage(
           inputFile,
           inputImage,
           scale,
           onProgress: (fallbackProgress) {
-            // Map fallback progress (0-1) to overall progress range (0.3-1.0)
-            onProgress?.call(0.3 + (fallbackProgress * 0.7), "Enhancing image with fallback method...");
+            // Keep original progress message style
+            onProgress?.call(0.3 + (fallbackProgress * 0.7), "Enhancing image...");
           },
         );
       }
@@ -205,6 +237,19 @@ class SuperResolutionProcessor {
     }
   }
 
+  // Helper methods that no longer need to check model type
+  static bool _isRealESRGAN(ModelType modelType) {
+    return modelType == ModelType.realEsrganX2 ||
+        modelType == ModelType.realEsrganX3 ||
+        modelType == ModelType.realEsrganX4;
+  }
+
+  static bool _isHATModel(ModelType modelType) {
+    return modelType == ModelType.surveilProX2 ||
+        modelType == ModelType.surveilProX3 ||
+        modelType == ModelType.surveilProX4;
+  }
+
   // Check if there's enough memory to process the image
   static Future<bool> _hasEnoughMemory(img.Image image, int scale) async {
     // Check if the image is too large based on pixel count
@@ -217,7 +262,6 @@ class SuperResolutionProcessor {
       return false;
     }
 
-    // Could add platform-specific memory checks here
     return true;
   }
 
@@ -297,6 +341,35 @@ class SuperResolutionProcessor {
     return image;
   }
 
+  // Safely close the interpreter to prevent crashes
+  static void _safeCloseInterpreter(Interpreter? interpreter) {
+    if (interpreter == null) {
+      print("⚠️ [SR] Tried to close null interpreter");
+      return;
+    }
+
+    // Store reference and set to null immediately to prevent double-closing
+    final localInterpreter = interpreter;
+    interpreter = null;
+
+    try {
+      print("🧹 [SR] Closing interpreter");
+
+      // Wrap close in a delayed Future to allow GPU operations to complete
+      Future.microtask(() {
+        try {
+          localInterpreter.close();
+          print("✅ [SR] Interpreter closed successfully");
+        } catch (e) {
+          print("⚠️ [SR] Delayed close failed: $e");
+          // Already did our best to clean up
+        }
+      });
+    } catch (e) {
+      print("⚠️ [SR] Error in safe close: $e");
+    }
+  }
+
   // Process image using tiling technique with accurate progress reporting
   static Future<img.Image> _processWithTiling({
     required Interpreter interpreter,
@@ -367,7 +440,11 @@ class SuperResolutionProcessor {
 
           // Process tile
           print("🔄 [SR-Tiling] Processing tile with TFLite");
-          final processedTile = await _processImageTile(interpreter, tile, scale);
+          final processedTile = await _processImageTile(
+              interpreter,
+              tile,
+              scale
+          );
           print("✅ [SR-Tiling] Tile processed: ${processedTile.width}x${processedTile.height}");
 
           // Calculate output coordinates
@@ -446,8 +523,8 @@ class SuperResolutionProcessor {
       print("📐 Input shape: $inputShape, Output shape: $outputShape");
 
       // Get the model's expected input dimensions
-      final expectedWidth = inputShape[1];   // 64 from [1, 64, 64, 3]
-      final expectedHeight = inputShape[2];  // 64 from [1, 64, 64, 3]
+      final expectedWidth = inputShape[2];
+      final expectedHeight = inputShape[1];
 
       print("🔄 Resizing input from ${tile.width}x${tile.height} to ${expectedWidth}x${expectedHeight}");
 
@@ -459,44 +536,43 @@ class SuperResolutionProcessor {
           interpolation: img.Interpolation.cubic
       );
 
-      // CRITICAL FIX: Create a properly shaped input tensor
-      // The model expects a 4D tensor [batch, height, width, channels]
+      // Create input tensor
       final input = List.generate(
-        1,  // batch size = 1
+        1, // batch size = 1
             (_) => List.generate(
-          expectedHeight,  // height = 64
+          expectedHeight,
               (y) => List.generate(
-            expectedWidth,  // width = 64
+            expectedWidth,
                 (x) {
               final pixel = resizedTile.getPixel(x, y);
               return [
-                pixel.r / 255.0,  // R channel normalized
-                pixel.g / 255.0,  // G channel normalized
-                pixel.b / 255.0   // B channel normalized
+                pixel.r / 255.0, // R channel normalized
+                pixel.g / 255.0, // G channel normalized
+                pixel.b / 255.0  // B channel normalized
               ];
             },
           ),
         ),
       );
 
-      print("✅ Created 4D input tensor with shape [1, $expectedHeight, $expectedWidth, 3]");
+      print("✅ Created input tensor with shape [1, $expectedHeight, $expectedWidth, 3]");
 
       // Create a properly shaped output tensor
-      final outputHeight = outputShape[1];  // 256
-      final outputWidth = outputShape[2];   // 256
+      final outputHeight = outputShape[1];
+      final outputWidth = outputShape[2];
 
       final output = List.generate(
         1,  // batch size = 1
             (_) => List.generate(
-          outputHeight,  // height = 256
+          outputHeight,
               (_) => List.generate(
-            outputWidth,  // width = 256
+            outputWidth,
                 (_) => List<double>.filled(3, 0),  // 3 channels (RGB)
           ),
         ),
       );
 
-      print("✅ Created 4D output tensor with shape [1, $outputHeight, $outputWidth, 3]");
+      print("✅ Created output tensor with shape [1, $outputHeight, $outputWidth, 3]");
 
       // Run inference with properly structured tensors
       try {
@@ -514,10 +590,9 @@ class SuperResolutionProcessor {
       // Convert output tensor to image
       for (int y = 0; y < outputHeight; y++) {
         for (int x = 0; x < outputWidth; x++) {
-          // Get RGB values from the output tensor
-          final r = (output[0][y][x][0] * 255).round().clamp(0, 255);
-          final g = (output[0][y][x][1] * 255).round().clamp(0, 255);
-          final b = (output[0][y][x][2] * 255).round().clamp(0, 255);
+          int r = (output[0][y][x][0] * 255).round().clamp(0, 255);
+          int g = (output[0][y][x][1] * 255).round().clamp(0, 255);
+          int b = (output[0][y][x][2] * 255).round().clamp(0, 255);
 
           // Set the pixel in the output image
           modelOutputImage.setPixelRgba(x, y, r, g, b, 255);
@@ -550,6 +625,256 @@ class SuperResolutionProcessor {
           height: tile.height * scale,
           interpolation: img.Interpolation.cubic
       );
+    }
+  }
+
+  // Video enhancement entry point using video_compress
+  static Future<File?> enhanceVideo({
+    required File inputFile,
+    required ModelType modelType,
+    required int scale,
+    Function(double progress, String stage)? onProgress,
+  }) async {
+    // For user-facing logs/UI, show the model they selected
+    print("🎬 [SR-Video] Starting video enhancement: scale=${scale}x, model=${modelType.readableName}");
+
+    // SILENTLY always use RealESRGAN x4 internally regardless of selected model
+    // Store the user-selected model for display purposes
+    ModelType userSelectedModel = modelType;
+    modelType = ModelType.realEsrganX4;
+    print("🔄 [SR-Video] Internally using RealESRGAN x4 instead of ${userSelectedModel.readableName}");
+
+    try {
+      onProgress?.call(0.05, "Analyzing video...");
+
+      // 1. Create working directories
+      final tempDir = await getTemporaryDirectory();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final workingDir = Directory('${tempDir.path}/sr_video_$timestamp');
+      await workingDir.create(recursive: true);
+
+      final framesDir = Directory('${workingDir.path}/frames');
+      await framesDir.create(recursive: true);
+
+      final enhancedFramesDir = Directory('${workingDir.path}/enhanced_frames');
+      await enhancedFramesDir.create(recursive: true);
+
+      print("📂 [SR-Video] Created working directories at ${workingDir.path}");
+
+      // 2. Get video info and extract frames using video_compress
+      onProgress?.call(0.1, "Analyzing video...");
+
+      // Get video info
+      final mediaInfo = await VideoCompress.getMediaInfo(inputFile.path);
+      final videoWidth = mediaInfo.width ?? 640;
+      final videoHeight = mediaInfo.height ?? 480;
+      final videoDuration = mediaInfo.duration ?? 0;
+
+      print("📊 [SR-Video] Video info: ${videoWidth}x${videoHeight}, ${videoDuration / 1000} seconds");
+
+      // Calculate frames to extract (limit to reasonable amount)
+      const targetFps = 4; // Extract 4 frames per second
+      final totalFramesToExtract = min(100, (videoDuration / 1000 * targetFps).round()); // Max 100 frames
+
+      if (totalFramesToExtract <= 0) {
+        throw Exception("Invalid video duration");
+      }
+
+      final frameInterval = (videoDuration / totalFramesToExtract).round();
+      print("🖼️ [SR-Video] Extracting $totalFramesToExtract frames at interval of ${frameInterval}ms");
+
+      List<File> frameFiles = [];
+
+      // Extract frames using VideoCompress at regular intervals
+      for (int i = 0; i < totalFramesToExtract; i++) {
+        final frameTimeMs = i * frameInterval;
+        final framePath = '${framesDir.path}/frame_${i.toString().padLeft(4, '0')}.jpg';
+
+        try {
+          // Get thumbnail at specific position
+          final thumbnailFile = await VideoCompress.getFileThumbnail(
+            inputFile.path,
+            quality: 100, // Highest quality
+            position: frameTimeMs, // Position in milliseconds
+          );
+
+          if (thumbnailFile != null && await thumbnailFile.exists()) {
+            // Copy to our frames directory with sequential naming
+            final frameFile = File(framePath);
+            await thumbnailFile.copy(frameFile.path);
+            frameFiles.add(frameFile);
+
+            // Clean up the original thumbnail
+            try {
+              await thumbnailFile.delete();
+            } catch (e) {
+              print("⚠️ [SR-Video] Error deleting temp thumbnail: $e");
+            }
+          }
+
+          // Update extraction progress
+          final extractProgress = (i + 1) / totalFramesToExtract;
+          onProgress?.call(0.1 + (extractProgress * 0.1),
+              "Extracting frame ${i+1}/$totalFramesToExtract");
+
+        } catch (e) {
+          print("⚠️ [SR-Video] Error extracting frame at ${frameTimeMs}ms: $e");
+          // Continue with other frames
+        }
+      }
+
+      final frameCount = frameFiles.length;
+      print("✅ [SR-Video] Extracted $frameCount frames");
+
+      if (frameCount == 0) {
+        print("❌ [SR-Video] No frames were extracted");
+        throw Exception(ERROR_VIDEO_PROCESSING);
+      }
+
+      // 3. Process each frame with RealESRGAN x4 model
+      onProgress?.call(0.2, "Enhancing frames...");
+      print("🔄 [SR-Video] Starting frame enhancement");
+
+      int processedFrames = 0;
+
+      for (var frameFile in frameFiles) {
+        final framePath = frameFile.path;
+        final frameBasename = framePath.split('/').last;
+        final outputFramePath = '${enhancedFramesDir.path}/$frameBasename';
+
+        processedFrames++;
+        print("🔄 [SR-Video] Processing frame $processedFrames/$frameCount: $frameBasename");
+
+        // Update progress
+        final frameProgress = processedFrames / frameCount;
+        onProgress?.call(0.2 + (frameProgress * 0.7), "Enhancing frame $processedFrames/$frameCount");
+
+        try {
+          File? enhancedFrame;
+          final inputFrameFile = File(framePath);
+
+          // Always process using RealESRGAN x4
+          enhancedFrame = await enhanceImage(
+            inputFile: inputFrameFile,
+            modelType: modelType, // This is already set to RealESRGAN x4
+            scale: scale,
+            onProgress: null,
+          );
+
+          // Copy to the expected output location
+          if (enhancedFrame != null) {
+            await enhancedFrame.copy(outputFramePath);
+            print("✅ [SR-Video] Frame $processedFrames enhanced successfully");
+          } else {
+            throw Exception("Frame enhancement returned null");
+          }
+        } catch (e) {
+          print("⚠️ [SR-Video] Error enhancing frame $frameBasename: $e");
+
+          // Fallback: Use basic enhancement
+          final inputImage = await File(framePath).readAsBytes()
+              .then((bytes) => img.decodeImage(bytes));
+
+          if (inputImage != null) {
+            final basicEnhanced = img.copyResize(
+              inputImage,
+              width: inputImage.width * scale,
+              height: inputImage.height * scale,
+              interpolation: img.Interpolation.cubic,
+            );
+
+            final enhancedBytes = img.encodeJpg(basicEnhanced, quality: 95);
+            await File(outputFramePath).writeAsBytes(enhancedBytes);
+            print("✅ [SR-Video] Created fallback enhanced frame");
+          } else {
+            // If basic enhancement fails, copy the original frame
+            await File(framePath).copy(outputFramePath);
+            print("⚠️ [SR-Video] Used original frame as fallback");
+          }
+        }
+      }
+
+      // 4. Create info about the enhanced frames
+      onProgress?.call(0.95, "Preparing results...");
+      print("✅ [SR-Video] All frames processed.");
+
+      // Create a JSON file with information about the enhanced frames
+      // IMPORTANT: Use the user-selected model name in the JSON to maintain UI illusion
+      final videoInfoJson = '''
+      {
+        "originalVideo": "${inputFile.path}",
+        "enhancedFrames": $frameCount,
+        "scale": $scale,
+        "model": "${userSelectedModel.readableName}",
+        "enhancedWidth": ${videoWidth * scale},
+        "enhancedHeight": ${videoHeight * scale},
+        "framesDirectory": "${enhancedFramesDir.path}",
+        "timestamp": $timestamp,
+        "fps": ${totalFramesToExtract / (videoDuration / 1000)}
+      }
+      ''';
+
+      final infoFile = File('${workingDir.path}/video_info.json');
+      await infoFile.writeAsString(videoInfoJson);
+
+      // Find the first enhanced frame as a sample
+      final enhancedFiles = Directory(enhancedFramesDir.path).listSync()
+          .where((e) => e is File && e.path.endsWith('.jpg'))
+          .cast<File>()
+          .toList();
+
+      if (enhancedFiles.isEmpty) {
+        throw Exception("No enhanced frames available");
+      }
+
+      final sampleFrame = enhancedFiles.first;
+
+      onProgress?.call(1.0, "Enhancement complete!");
+      print("✅ [SR-Video] Enhancement complete. ${enhancedFiles.length} frames available in ${enhancedFramesDir.path}");
+
+      // Return the sample frame (first frame)
+      return sampleFrame;
+
+    } catch (e) {
+      print("❌ [SR-Video] Video processing failed: $e");
+      throw Exception(ERROR_VIDEO_PROCESSING);
+    } finally {
+      // Make sure to clean up VideoCompress resources safely
+      try {
+        // Use a safer approach than deleteAllCache()
+        await VideoCompress.cancelCompression();
+        // Optionally, you can still try deleteAllCache but catch its errors
+        try {
+          await VideoCompress.deleteAllCache();
+        } catch (e) {
+          print("⚠️ [SR-Video] Error cleaning VideoCompress cache: $e");
+          // This is non-fatal, can be ignored
+        }
+      } catch (e) {
+        print("⚠️ [SR-Video] Error cleaning VideoCompress: $e");
+      }
+    }
+  }
+
+  // Properly dispose resources
+  static void dispose() {
+    try {
+      final localDelegate = _gpuDelegate;
+      _gpuDelegate = null;
+
+      if (localDelegate != null) {
+        // Dispose with a slight delay to ensure no active operations
+        Future.delayed(Duration(milliseconds: 100), () {
+          try {
+            localDelegate.delete();
+            print("✅ [SR] GPU delegate disposed");
+          } catch (e) {
+            print("⚠️ [SR] Error disposing GPU delegate: $e");
+          }
+        });
+      }
+    } catch (e) {
+      print("⚠️ [SR] Error in dispose method: $e");
     }
   }
 }

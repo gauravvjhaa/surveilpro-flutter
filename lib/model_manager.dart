@@ -421,6 +421,8 @@ class ModelManager extends ChangeNotifier {
     }
   }
 
+
+
   // Get available model types (downloaded only)
   List<ModelType> get downloadedModelTypes {
     return allModels

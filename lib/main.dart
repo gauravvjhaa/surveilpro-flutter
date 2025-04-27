@@ -1,11 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:surveilpro/super_resolution_processor.dart';
+import 'hat_model_processor.dart';
 import 'super_resolution_screen.dart';
 import 'package:provider/provider.dart';
 import 'model_manager.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Register dispose callback when app is killed
+  SystemChannels.lifecycle.setMessageHandler((msg) async {
+    if (msg == AppLifecycleState.detached.toString()) {
+      SuperResolutionProcessor.dispose();
+      HATModelProcessor.dispose();
+    }
+    return null;
+  });
 
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
