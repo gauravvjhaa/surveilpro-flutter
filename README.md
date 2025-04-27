@@ -30,9 +30,9 @@ SurveilPro is a mobile application that enhances image and video quality using a
 
 ## Screenshots
 
-|                Original Image                |               Enhanced Result                | Model Selection |
-|:--------------------------------------------:|:--------------------------------------------:|:---------------:|
-| ![Original](assets/screenshots/low_res.jpeg) | ![Enhanced](assets/sreenshots/high_res.jpeg) |   Real-ESRGAN   |
+|                Original Image                |                Enhanced Result                | Model Selection |
+|:--------------------------------------------:|:---------------------------------------------:|:---------------:|
+| ![Original](assets/screenshots/low_res.jpeg) | ![Enhanced](assets/screenshots/high_res.jpeg) |   Real-ESRGAN   |
 
 
 ## Contact
