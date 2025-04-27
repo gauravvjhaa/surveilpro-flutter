@@ -1,16 +1,42 @@
-# surveilpro
+# SurveilPro
 
-A new Flutter project.
+![SurveilPro Banner](assets/screenshots/banner.png)
 
-## Getting Started
+## About
 
-This project is a starting point for a Flutter application.
+SurveilPro is a mobile application that enhances image and video quality using advanced super-resolution AI models. The app processes media directly on your device, ensuring complete privacy and security of your data.
 
-A few resources to get you started if this is your first Flutter project:
+## Key Features
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+- **AI-Powered Super-Resolution**: Transform low-quality images and videos into high-resolution versions
+- **On-Device Processing**: All processing happens locally - no data leaves your device
+- **Lightweight Design**: Small app footprint with on-demand model downloads from GitHub
+- **Visual Comparison**: Toggle between original and enhanced images to see the difference
+- **Model Management**: Download, update, and share different super-resolution models
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## How It Works
+
+1. Select an image or video to enhance
+2. Choose from available super-resolution models
+3. Process the media on your device
+4. View and save the enhanced result
+
+## Technology Stack
+
+- **Flutter** for cross-platform mobile development
+- **TFLite** for on-device machine learning inference
+- **Custom fine-tuned super-resolution models** converted from PyTorch to TFLite
+
+
+## Screenshots
+
+|                Original Image                |               Enhanced Result                | Model Selection |
+|:--------------------------------------------:|:--------------------------------------------:|:---------------:|
+| ![Original](assets/screenshots/low_res.jpeg) | ![Enhanced](assets/sreenshots/high_res.jpeg) |   Real-ESRGAN   |
+
+
+## Contact
+
+Gaurav Jha - [@gauravvjhaa](https://github.com/gauravvjhaa)
+Raj Shakya - [@Rajshakya0101](https://github.com/Rajshakya0101)
+
